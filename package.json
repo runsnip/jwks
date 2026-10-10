@@ -26,6 +26,9 @@
     "./package.json": "./package.json"
   },
   "files": ["dist", "LICENSE", "README.md"],
+  "publishConfig": {
+    "access": "public"
+  },
   "engines": {
     "node": ">=20.19"
   },
