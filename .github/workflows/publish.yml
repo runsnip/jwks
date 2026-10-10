@@ -1,0 +1,158 @@
+name: Publish
+
+# The file name is part of the contract: npmjs.com → the package's Settings → Trusted publishing →
+# "Workflow filename" must read exactly "publish.yml". Renaming it means changing it there too.
+#
+# Shaped after material-atomic/ecosy-next's publish.yml, with what differs for this repo:
+# - The repository is public (the package is MIT), so npm signs provenance: --provenance ties the
+#   published tarball to this repository and this workflow run, and package.json's "repository"
+#   must name this repository for npm to accept it.
+# - npm, not yarn; the package has no dependency, and its tests run against jose (a devDependency)
+#   to check every verdict against another implementation's.
+# - The first release of a package cannot come through here: npm's Trusted publishing settings exist
+#   only for a package already on the registry. 0.1.0 was published by hand; from the next version
+#   on, a tag v<version> pushed to this repo publishes it.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Run every step except the real `npm publish` (rehearsal only)'
+        type: boolean
+        default: true
+
+# id-token: write lets the job mint the OIDC token npm's Trusted publishing exchanges for a publish.
+# No NPM_TOKEN and no npm secret anywhere in this file, on purpose.
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest # Trusted publishing does not support self-hosted runners.
+
+    # setup-node with registry-url writes an .npmrc naming ${NODE_AUTH_TOKEN}; Trusted publishing
+    # authenticates through OIDC and never sets it. Empty at job level so no step trips on the
+    # placeholder; publishing does not use it.
+    env:
+      NODE_AUTH_TOKEN: ""
+
+    steps:
+      # Pinned by commit; verified 2026-10-04 with `gh api repos/actions/<name>/git/refs/tags/<tag>`.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+          package-manager-cache: false # no cache in a release build
+
+      - name: Report toolchain versions actually on this runner
+        run: |
+          echo "node: $(node -v)"
+          echo "npm:  $(npm -v)"
+
+      # docs.npmjs.com/trusted-publishers: Trusted publishing requires npm 11.5.1 or later. Read on
+      # the runner that is about to publish, not assumed from the Node version.
+      - name: Assert npm satisfies the Trusted publishing floor (>= 11.5.1)
+        run: |
+          node -e '
+            const [a, b, c] = process.argv[1].split(".").map(Number);
+            if (a > 11 || (a === 11 && (b > 5 || (b === 5 && c >= 1)))) { console.log(`npm ${process.argv[1]} >= 11.5.1`); process.exit(0); }
+            console.error(`npm ${process.argv[1]} is below 11.5.1, which Trusted publishing requires. Install a newer npm before this step.`);
+            process.exit(1);
+          ' "$(npm -v)"
+
+      - name: Assert the pushed tag names package.json's version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          echo "tag: v$TAG_VERSION   package.json: $PKG_VERSION"
+          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
+            echo "tag v$TAG_VERSION does not name package.json version $PKG_VERSION; refusing to publish a version the tag does not claim to be." >&2
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: |
+          if [ -f package-lock.json ]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi
+
+      - name: Type-check (sources and tests)
+        run: node node_modules/typescript/bin/tsc -p tsconfig.test.json
+
+      - name: Build
+        run: node scripts/build.mjs
+
+      # The test command called directly, not through `npm test`, so this file shows exactly what
+      # runs. node --test exits 0 however few tests it found: the pass count is held to the number
+      # measured on a clean build, and a drop must change this line first.
+      - name: Run tests (with pass-count assertion)
+        run: |
+          node --test --test-reporter=tap "tests/*.test.ts" | tee test-output.tap
+          PASS=$(grep -m1 '^# pass ' test-output.tap | awk '{print $3}')
+          FAIL=$(grep -m1 '^# fail ' test-output.tap | awk '{print $3}')
+          echo "pass=$PASS fail=$FAIL"
+          FLOOR=9
+          if [ -z "$PASS" ] || [ "$PASS" -lt "$FLOOR" ]; then
+            echo "$PASS (or unreadable) passing tests, below the floor of $FLOOR measured on a clean build: fewer test files ran than should, or a test was removed. Understand it before publishing." >&2
+            exit 1
+          fi
+          if [ "$FAIL" -ne 0 ]; then
+            echo "$FAIL failing test(s), see the TAP output above." >&2
+            exit 1
+          fi
+
+      - name: Assert tarball contents (every export built, no sources, tests or tooling)
+        run: node scripts/check-tarball.mjs
+
+      # A dry run never authenticates, so it cannot tell whether Trusted publishing is set up: only a
+      # real publish can. It still catches a wrong command shape, such as a prerelease without --tag.
+      - name: Publish rehearsal (dry-run)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run == true }}
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          case "$VERSION" in *-*) TAG_ARGS="--tag next" ;; *) TAG_ARGS="" ;; esac
+          set +e
+          OUTPUT=$(npm publish --dry-run --ignore-scripts --access public $TAG_ARGS 2>&1)
+          STATUS=$?
+          echo "$OUTPUT"
+          set -e
+          if [ "$STATUS" -eq 0 ]; then echo "publish rehearsal: dry-run succeeded."; exit 0; fi
+          if echo "$OUTPUT" | grep -q "You cannot publish over the previously published versions"; then
+            echo "publish rehearsal: $VERSION is already on npm; nothing else to rehearse."
+            exit 0
+          fi
+          exit "$STATUS"
+
+      # The one step that reaches the registry, only on a tag. --ignore-scripts: build and tests ran
+      # above as named steps; prepublishOnly does not run again unseen. A prerelease goes under the
+      # 'next' dist-tag (npm >= 11 refuses one without --tag).
+      - name: Publish
+        if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          case "$VERSION" in
+            *-*) npm publish --ignore-scripts --access public --provenance --tag next ;;
+            *) npm publish --ignore-scripts --access public --provenance ;;
+          esac
+
+      # The exit code says the CLI is satisfied; the registry is read back to say the version is
+      # there. Retried, because a new version is not served at once.
+      - name: Assert the version is on the registry
+        if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          NAME=$(node -p "require('./package.json').name")
+          for attempt in 1 2 3 4 5 6 7 8 9 10; do
+            if [ "$(npm view "$NAME@$VERSION" version 2>/dev/null)" = "$VERSION" ]; then
+              echo "$NAME@$VERSION is on the registry (attempt $attempt)."
+              exit 0
+            fi
+            echo "attempt $attempt/10: $NAME@$VERSION not served yet"
+            sleep 6
+          done
+          echo "$NAME@$VERSION still not on the registry after a minute, though publish reported success." >&2
+          exit 1

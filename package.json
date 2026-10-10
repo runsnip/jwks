@@ -1,0 +1,44 @@
+{
+  "name": "@runsnip/jwks",
+  "version": "0.1.0",
+  "description": "Verify JWTs and OAuth access tokens against JSON Web Key Sets, with node:crypto alone: remote and local key sets, authorization server discovery, RFC 9068 access tokens, RFC 7662 introspection.",
+  "keywords": ["jwks", "jwt", "jws", "jwk", "oauth", "oauth2", "access-token", "rfc9068", "rfc7662", "introspection", "openid", "verify", "mcp"],
+  "license": "MIT",
+  "author": {
+    "name": "Canh Nguyen Van",
+    "url": "https://canhnguyen.vn",
+    "email": "hello@canhnguyen.vn"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/runsnip/jwks.git"
+  },
+  "bugs": {
+    "url": "https://github.com/runsnip/jwks/issues"
+  },
+  "homepage": "https://github.com/runsnip/jwks#readme",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": ["dist", "LICENSE", "README.md"],
+  "engines": {
+    "node": ">=20.19"
+  },
+  "sideEffects": false,
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node --test \"tests/*.test.ts\"",
+    "bench": "node bench/verify.mjs",
+    "prepack": "node scripts/build.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "jose": "^6.2.12",
+    "typescript": "^7.0.2"
+  }
+}
