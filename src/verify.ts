@@ -11,6 +11,7 @@
  *    claims as the caller asks.
  */
 import { constants, createHmac, timingSafeEqual, verify as verifySignature, type KeyObject } from "node:crypto";
+import { strictEd25519 } from "./ed25519.ts";
 import { JwksError } from "./errors.ts";
 import { type Algorithm, type Jwk, ASYMMETRIC, assertKeyFits, importJwk } from "./jwk.ts";
 import type { JwsHeader, KeySet } from "./jwks.ts";
@@ -74,6 +75,14 @@ function decodeJson(part: string, what: string): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
+const raws = new WeakMap<KeyObject, Buffer>();
+/** An Ed25519 KeyObject's 32 public bytes, exported once per key. */
+function rawEd25519(key: KeyObject): Buffer {
+  let raw = raws.get(key);
+  if (!raw) raws.set(key, (raw = Buffer.from(key.export({ format: "jwk" }).x!, "base64url")));
+  return raw;
+}
+
 /** Whether `signature` verifies `data` with `key` under `alg` (the key already checked to fit). */
 export function verifies(alg: Algorithm, key: KeyObject, data: Buffer, signature: Buffer): boolean {
   const hash = HASH[alg];
@@ -86,6 +95,7 @@ export function verifies(alg: Algorithm, key: KeyObject, data: Buffer, signature
       if (signature.length !== ECDSA_BYTES[alg]) return false;
       return verifySignature(hash, data, { key, dsaEncoding: "ieee-p1363" }, signature);
     }
+    if (key.asymmetricKeyType === "ed25519" && !strictEd25519(rawEd25519(key), signature)) return false;
     if (alg.startsWith("PS")) return verifySignature(hash, data, { key, padding: constants.RSA_PKCS1_PSS_PADDING, saltLength: constants.RSA_PSS_SALTLEN_DIGEST }, signature);
     return verifySignature(hash, data, key, signature);
   } catch {

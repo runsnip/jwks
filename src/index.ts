@@ -1,3 +1,4 @@
+export { strictEd25519, weakEd25519Point } from "./ed25519.ts";
 export { JwksError, type JwksErrorCode } from "./errors.ts";
 export { type Algorithm, type Jwk, ALGORITHMS, ASYMMETRIC, algorithmsOf, assertKeyFits, importJwk, isSigningKey } from "./jwk.ts";
 export { type Jwks, type JwsHeader, type KeySet, type RemoteJwks, type RemoteJwksOptions, createLocalJwks, createRemoteJwks } from "./jwks.ts";

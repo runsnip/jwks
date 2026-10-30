@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createHmac, createPrivateKey, createPublicKey, generateKeyPairSync, randomBytes, sign as nodeSign } from "node:crypto";
+import { createHmac, createPrivateKey, createPublicKey, generateKeyPairSync, randomBytes, sign as nodeSign, verify as nodeVerify } from "node:crypto";
 import * as jose from "jose";
 import { type Algorithm, createLocalJwks, JwksError, verifyJwt } from "../src/index.ts";
 
@@ -138,3 +138,27 @@ test("claims: tolerance, maxTokenAgeS, sub, typ, required claims, the size limit
   assert.equal(await code(verifyJwt(await sign(s, { pad: "x".repeat(20_000) }), keys)), "ERR_JWT_MALFORMED");
   try { await verifyJwt(await sign(s, { aud: "x" }), keys, { audience: "y" }); } catch (e) { assert.equal((e as JwksError).claim, "aud"); }
 });
+
+test("EdDSA is checked strictly: the small-order forgery the platform takes is refused, S + L refused", async () => {
+  const identity = Buffer.alloc(32); identity[0] = 1;
+  const forgedKey = { kty: "OKP", crv: "Ed25519", x: identity.toString("base64url") };
+  const h = Buffer.from(JSON.stringify({ alg: "EdDSA" })).toString("base64url");
+  const p = Buffer.from(JSON.stringify({ sub: "admin", exp: now + 60 })).toString("base64url");
+  const forged = Buffer.alloc(64); forged[0] = 1; // R = identity, S = 0
+  /* The platform alone takes it: the hole this closes. */
+  assert.equal(require_verify(createPublicKey({ key: forgedKey, format: "jwk" }), `${h}.${p}`, forged), true);
+  assert.equal(await code(verifyJwt(`${h}.${p}.${forged.toString("base64url")}`, forgedKey as never, { algorithms: ["EdDSA"] })), "ERR_JWS_SIGNATURE");
+  const s = await setup("EdDSA");
+  const token = await sign(s, { sub: "alice", exp: now + 60 });
+  assert.equal(await code(verifyJwt(token, s.jwks.keys[0] as never, { algorithms: ["EdDSA"] })), "ok");
+  const [th, tp, ts] = token.split(".") as [string, string, string];
+  const sig = Buffer.from(ts, "base64url");
+  const L = Buffer.from("edd3f55c1a631258d69cf7a2def9de1400000000000000000000000000000010", "hex");
+  let carry = 0;
+  for (let i = 0; i < 32; i++) { const v = sig[32 + i]! + L[i]! + carry; sig[32 + i] = v & 0xff; carry = v >> 8; }
+  if (!carry) assert.equal(await code(verifyJwt(`${th}.${tp}.${sig.toString("base64url")}`, s.jwks.keys[0] as never, { algorithms: ["EdDSA"] })), "ERR_JWS_SIGNATURE");
+});
+
+function require_verify(key: ReturnType<typeof createPublicKey>, data: string, signature: Buffer) {
+  return nodeVerify(null, Buffer.from(data), key, signature);
+}

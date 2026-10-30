@@ -88,8 +88,14 @@ that signs an `HS256` token with a server's public key as the secret is refused 
 bytes or more. RSA keys are 2048 bits or more. A JWK's own `alg`, `use` and `key_ops` are honoured. A key set's key
 that holds a private part (`d`) is never used.
 
+**Ed25519 checked strictly.** OpenSSL (and so `node:crypto`, WebCrypto and jose) takes a key or an `R` of small
+order: with the identity key, `R` the identity and `S` = 0 verify every message. Before the platform's check, a key
+or `R` of small order or not canonical, and an `S` not below the group order, are refused (`ERR_JWS_SIGNATURE`), as
+ed25519-dalek's `verify_strict` does. `strictEd25519(publicKey, signature)` and `weakEd25519Point(point)` are exported
+for code that verifies Ed25519 some other way. The check costs 1.8 µs, about 2% of an EdDSA verification.
+
 **Stricter than jose on purpose:** a signature with base64 padding (`=`) is refused, as RFC 7515's compact form has
-none. The tests check every other verdict against jose's (`tests/verify.test.ts`, 156 tokens, every algorithm).
+none; and the Ed25519 rules above. The tests check every other verdict against jose's (`tests/verify.test.ts`, 156 tokens, every algorithm).
 
 ## Speed
 
